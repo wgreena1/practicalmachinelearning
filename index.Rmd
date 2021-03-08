@@ -1,0 +1,232 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Wendy Greenawalt"
+date: "3/5/2021"
+output: 
+  html_document: 
+    keep_md: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+## Executive Summary
+
+Personal fitness devices collect a large amount of data about personal activity relatively inexpensively, and this data can be used to assess many aspects of exercise and fitness, including the quality of movements. In this report, accelerometer data collected from participants who performed excercises both correctly and incorrectly was used to train multiple cross-validated machine learning algortithms to predict movement quality. The best performing model was selected based on estimated out of sample accuracy determined with a validation set, which was a subset of the training data. The best performing model, a random forests algorithm, was then used to predict movement quality in a test set of 20 cases.
+
+## Loading and Partitioning Data 
+
+Load required packages:
+```{r}
+library(caret)
+library(lattice)
+library(ggplot2)
+library(corrplot)
+library(RColorBrewer)
+library(rattle)
+```
+
+Set seed for reproducibility purposes:
+```{r}
+set.seed(2372)
+```
+
+The training and testing data is loaded into R:
+```{r}
+train<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv")
+test<-read.csv("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv")
+```
+
+We will divide the training data into a training set and a validation set. The validation set will allow us to compare multiple cross-validated machine learning models, estimate the out of sample error for each, and select the best performing model to apply once and only once to the testing set. The data is partitioned based on the output variable (classe).
+
+```{r}
+inTrain<-createDataPartition(y=train$classe, p=0.7, list=FALSE)
+training<-train[inTrain,]
+validation<-train[-inTrain,]
+```
+
+## Tidying Data
+
+We will be training our various machine learning models to predict the value of the "classe" variable based on the variables corresponding to the readings for one of the four sensors. Those sensor reading variable names include the substrings "_belt", "_arm", "_dumbell", and "_forearm". We will remove all columns (from all three data sets) that do not correspond to our output or input variables:
+
+```{r}
+inputColumns <- grep(pattern = "_belt|_arm|_dumbbell|_forearm", names(training))
+training <- training[, c(inputColumns,160)]
+validation <- validation[, c(inputColumns,160)]
+testing <- test[, c(inputColumns,160)]
+```
+
+We should also change the "classe" variable to a factor vs character class in the training and validation data sets (classe is not included in the testing set):
+```{r}
+training$classe<-as.factor(training$classe)
+validation$classe<-as.factor(validation$classe)
+```
+
+Next we should identify the variables that have near zero variability in the training set so that these columns can be removed from all three data sets:
+
+```{r}
+nsv<-nearZeroVar(training, saveMetrics = TRUE)
+nsv
+training<-training[, !nsv$nzv]
+validation<-validation[, !nsv$nzv]
+testing<-testing[, !nsv$nzv]
+```
+
+Next we should identify the columns in the training set that a large number of NA values:
+
+```{r}
+colSums(is.na(training))
+```
+
+We can see that many of the variables have 13452 instances of NA values, or are NA about 97% of the time. These columns should be removed from all three data sets:
+
+```{r}
+column_na<- (colSums(is.na(training))>13000)
+training<-training[, !column_na]
+validation<-validation[, !column_na]
+testing<-testing[, !column_na]
+```
+
+## Exploratory Data Analysis
+
+We can look to see if any of the input variables in our training set are highly correlated with each other:
+```{r}
+cor_training<-cor(training[,-53])
+corrplot(cor_training, method="color", type="lower", order="FPC", col = brewer.pal(n = 8, name = "RdBu"), tl.pos= "ld", tl.col="black", tl.cex=0.5, mar=c(1,1,1,1), diag=FALSE)
+```
+  
+In the correlogram above, predictor interactions depicted in dark red are highly negatively correlated, while those depicted in dark blue are highly positively correlated. 
+
+The number of highly correlated predictors (correlation > |0.8|) is:
+```{r}
+M <- abs(cor(training[,-53])) 
+diag(M) <- 0
+M <- which(M > 0.8, arr.ind = T)
+M <- dim(M)[1]
+M
+```
+The number of less correlated predictors (correlation <= |0.8|) is:
+```{r}
+M <- abs(cor(training[,-53])) 
+diag(M) <- 0
+M <- which(M <= 0.8, arr.ind = T)
+M <- dim(M)[1]
+M
+```
+
+We could use principal components analysis at this point in order to collapse the correlated variables to create a weighted combination of predictors. This would improve model performance. However, this also reduces the interpretability of our model. Additionally, the highly correlated predictors represent only a small fraction of predictor pairs in the training set. As such, PCA was not performed in order to maintain simplicity of interpretation.
+
+## Cross Validation
+
+The use of cross-validation while training models can improve model performance. We will us kfold cross validation (k=3) in this project for each machine learning method tested. 
+```{r}
+fitControl <- trainControl(method='cv', number = 3)
+```
+
+## Decision Trees
+
+The first machine learning model we will develop uses the decision tree method.
+
+```{r}
+tree_fit<-train(classe ~ . , data=training, method="rpart", trControl=fitControl)
+fancyRpartPlot(tree_fit$finalModel)
+```
+  
+We will now calculate the in-sample accuracy for this model on the training set:
+```{r}
+tree_pred_train<- predict(tree_fit, newdata=training)
+cm<-confusionMatrix(tree_pred_train, training$classe)
+accuracy_tree_in<-round(cm$overall[1], 4)
+cm
+```
+The in-sample accuracy for this model is `r accuracy_tree_in`. 
+
+The model is then applied to the validation set in order to estimate the out of sample accuracy:
+
+```{r}
+tree_pred_valid<-predict(tree_fit, newdata=validation)
+cm<-confusionMatrix(tree_pred_valid, validation$classe)
+accuracy_tree_out<-round(cm$overall[1], 4)
+cm
+```
+
+The estimated out of sample accuracy for this model is `r accuracy_tree_out`, which you will notice is lower than the in sample accuracy. 
+
+## Random Forests
+
+We will next create a random forest model for prediction:
+
+```{r}
+rf_fit<-train(classe ~ . , data=training, method="rf", trControl=fitControl, verbose=FALSE)
+```
+We will now calculate the in-sample accuracy for this model on the training set:
+```{r}
+rf_pred_train<- predict(rf_fit, newdata=training)
+cm<-confusionMatrix(rf_pred_train, training$classe)
+accuracy_rf_in<-round(cm$overall[1], 4)
+cm
+```
+The in-sample accuracy for this model is `r accuracy_rf_in`. 
+
+The model is then applied to the validation set in order to estimate the out of sample accuracy:
+```{r}
+rf_pred_valid<- predict(rf_fit, newdata=validation)
+cm<-confusionMatrix(rf_pred_valid, validation$classe)
+accuracy_rf_out<-round(cm$overall[1], 4)
+cm
+```
+
+The estimated out of sample accuracy for this model is `r accuracy_rf_out`, which you will notice is lower than the in sample accuracy. 
+
+## Boost
+
+Finally we will creat a generalized bosted model for prediction:
+```{r}
+gbm_fit<-train(classe ~ . , data=training, method="gbm", trControl=fitControl, verbose=FALSE)
+```
+
+We will now calculate the in-sample accuracy for this model on the training set:
+```{r}
+gbm_pred_train<- predict(gbm_fit, newdata=training)
+cm<-confusionMatrix(gbm_pred_train, training$classe)
+accuracy_gbm_in<-round(cm$overall[1], 4)
+cm
+```
+The in-sample accuracy for this model is `r accuracy_gbm_in`. 
+
+The model is then applied to the validation set in order to estimate the out of sample accuracy:
+```{r}
+gbm_pred_valid<- predict(gbm_fit, newdata=validation)
+cm<-confusionMatrix(gbm_pred_valid, validation$classe)
+accuracy_gbm_out<-round(cm$overall[1], 4)
+cm
+```
+
+The estimated out of sample accuracy for this model is `r accuracy_gbm_out`, which you will notice is lower than the in sample accuracy. 
+
+## Model Selection
+
+The following table shows the respective out of sample accuracies for each model
+```{r}
+acc_tab<-rbind(c("Decision Tree", accuracy_tree_out), c("Random Forests", accuracy_rf_out), c("Generalized Boost", accuracy_gbm_out))
+colnames(acc_tab)<-c("Model", "Out of Sample Accuracy")
+acc_tab
+```
+
+The model with the highest estimated out of sample accuracy is the Random Forests model. 
+
+## Testing the model 
+
+The selected random forests model will be applied to the test set to predict the "classe" variable in this data.
+
+```{r}
+rf_pred_test<- predict(rf_fit, newdata=testing[,-53])
+rf_pred_test
+```
+
+These values will be used to complete the project quiz.
+
+## Conclusions
+
+Based on the validation set, the best machine learning model for predicting the classe variable based on the sensor data is a random forests model. The generalized boost model performed almost as well, but the decision tree model performed poorly with an estimated prediction accuracy of less than 50%. 
+
+
